@@ -1,0 +1,221 @@
+<!DOCTYPE html>
+<html lang="tr">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Canli SPR Simulator</title>
+<style>
+  #startScreen{
+    min-height:calc(100vh - 40px);
+    display:flex;
+    align-items:center;
+    justify-content:center;
+    text-align:center;
+  }
+  .startBox{
+    width:min(520px,90%);
+    background:#0f1f39;
+    border:1px solid #26385c;
+    border-radius:16px;
+    padding:36px 24px;
+    box-sizing:border-box;
+  }
+  .startBox h1{font-size:28px;margin:0 0 8px;}
+  .startBox p{color:#6f83a3;margin:0 0 26px;}
+  #startBtn{
+    border:0;
+    border-radius:10px;
+    padding:13px 28px;
+    background:#ff3324;
+    color:white;
+    font-size:16px;
+    font-weight:700;
+    cursor:pointer;
+  }
+  #startBtn:active{transform:scale(.98);}
+  #simulator{display:none;}
+  body{margin:0;background:#0a1424;color:#eef2f7;font-family:system-ui,sans-serif;padding:20px;}
+  .wrap{max-width:900px;margin:0 auto;}
+  h1{font-size:22px;margin:0 0 4px;}
+  .sub{color:#6f83a3;font-size:14px;margin:0 0 20px;}
+  .card{background:#0f1f39;border:1px solid #26385c;border-radius:12px;padding:18px;margin-bottom:16px;}
+  canvas{width:100%;height:auto;display:block;}
+  .readouts{display:flex;gap:12px;flex-wrap:wrap;margin-bottom:16px;}
+  .tile{background:#13294a;border:1px solid #26385c;border-radius:10px;padding:10px 16px;flex:1;min-width:120px;}
+  .tile .k{font-size:11px;letter-spacing:.1em;text-transform:uppercase;color:#6f83a3;}
+  .tile .v{font-size:22px;font-weight:600;margin-top:3px;font-family:monospace;}
+  .tile.hero .v{color:#7fe08a;}
+  .ctrl{margin-bottom:16px;}
+  .ctrl label{display:flex;justify-content:space-between;margin-bottom:8px;font-size:14px;}
+  .ctrl .val{font-family:monospace;color:#ff3324;font-weight:600;}
+  input[type=range]{width:100%;height:5px;border-radius:5px;background:#26385c;outline:none;
+    -webkit-appearance:none;appearance:none;cursor:pointer;}
+  input[type=range]::-webkit-slider-thumb{-webkit-appearance:none;width:20px;height:20px;border-radius:50%;
+    background:#ff3324;border:3px solid #0a1424;}
+  input[type=range]::-moz-range-thumb{width:20px;height:20px;border-radius:50%;background:#ff3324;border:3px solid #0a1424;}
+  .note{font-size:12px;color:#6f83a3;margin-top:10px;}
+</style>
+</head>
+<body>
+<div id="startScreen">
+  <div class="startBox">
+    <h1>Canli SPR Biyosensor</h1>
+    <p>Interactive Simulation</p>
+    <button id="startBtn">SIMÜLASYONU BAŞLAT</button>
+  </div>
+</div>
+
+<div id="simulator">
+<div class="wrap">
+  <h1>Canli SPR Biyosensor Simulatoru</h1>
+  <p class="sub">Kaydiricilari cek - cukur ve Ab baglanma kaymasi gercek zamanli degisir.</p>
+
+  <div class="card">
+    <canvas id="plot" width="1200" height="640"></canvas>
+    <p class="note">Mavi = protein yok · Kirmizi kesikli = Ab baglandi · Ari bant = kayma</p>
+  </div>
+
+  <div class="readouts">
+    <div class="tile"><div class="k">Rezonans acisi</div><div class="v" id="rAngle">-</div></div>
+    <div class="tile"><div class="k">Kayma</div><div class="v" id="rShift">-</div></div>
+    <div class="tile hero"><div class="k">Duyarlilik S</div><div class="v" id="rSens">-</div></div>
+  </div>
+
+  <div class="card">
+    <div class="ctrl">
+      <label><span>Grafen katman sayisi</span><span class="val" id="vG">5</span></label>
+      <input type="range" id="sG" min="0" max="10" step="1" value="5">
+    </div>
+    <div class="ctrl">
+      <label><span>Altin kalinligi</span><span class="val" id="vAu">50 nm</span></label>
+      <input type="range" id="sAu" min="30" max="60" step="1" value="50">
+    </div>
+    <div class="ctrl">
+      <label><span>Bagli Ab miktari (dn)</span><span class="val" id="vDn">0.009</span></label>
+      <input type="range" id="sDn" min="0" max="0.012" step="0.001" value="0.009">
+    </div>
+  </div>
+</div>
+</div>
+
+<script>
+// --- kompleks sayi ---
+const cx=(re,im=0)=>({re,im});
+const cadd=(a,b)=>cx(a.re+b.re,a.im+b.im);
+const csub=(a,b)=>cx(a.re-b.re,a.im-b.im);
+const cmul=(a,b)=>cx(a.re*b.re-a.im*b.im,a.re*b.im+a.im*b.re);
+const cdiv=(a,b)=>{const d=b.re*b.re+b.im*b.im;return cx((a.re*b.re+a.im*b.im)/d,(a.im*b.re-a.re*b.im)/d);};
+const csqrt=(z)=>{const r=Math.hypot(z.re,z.im);const re=Math.sqrt((r+z.re)/2);let im=Math.sqrt((r-z.re)/2);if(z.im<0)im=-im;return cx(re,im);};
+const cexp=(z)=>{const e=Math.exp(z.re);return cx(e*Math.cos(z.im),e*Math.sin(z.im));};
+const cabs2=(z)=>z.re*z.re+z.im*z.im;
+
+// --- malzeme (633 nm) ---
+const INF=1e9,LAM=633;
+const nPrism=cx(1.5151),nGold=cx(0.1726,3.4218),nGraphene=cx(3.0,1.149);
+const N_BASE=1.330;
+
+function fresnel_p(ni,nj,ci,cj){
+  return cdiv(csub(cmul(nj,ci),cmul(ni,cj)),cadd(cmul(nj,ci),cmul(ni,cj)));
+}
+function reflectance(nList,dList,thetaDeg){
+  const L=nList.length,n0=nList[0],sin0=Math.sin(thetaDeg*Math.PI/180);
+  const cosL=nList.map(nk=>{
+    const s=cdiv(cx(n0.re*sin0,n0.im*sin0),nk);const s2=cmul(s,s);
+    return csqrt(csub(cx(1,0),s2));
+  });
+  const r=[];
+  for(let k=0;k<L-1;k++) r.push(fresnel_p(nList[k],nList[k+1],cosL[k],cosL[k+1]));
+  let rtot=r[L-2];
+  for(let k=L-2;k>=1;k--){
+    const delta=cmul(cx(2*Math.PI/LAM,0),cmul(nList[k],cmul(cx(dList[k],0),cosL[k])));
+    const ph=cexp(cx(-2*delta.im,2*delta.re));
+    rtot=cdiv(cadd(r[k-1],cmul(rtot,ph)),cadd(cx(1,0),cmul(r[k-1],cmul(rtot,ph))));
+  }
+  return cabs2(rtot);
+}
+function buildStack(analyte,g,au){
+  const nList=[nPrism,nGold],dList=[INF,au];
+  if(g>0){nList.push(nGraphene);dList.push(g*0.34);}
+  nList.push(cx(analyte));dList.push(INF);
+  return {nList,dList};
+}
+function curve(analyte,g,au,a0,a1,step){
+  const {nList,dList}=buildStack(analyte,g,au);
+  const xs=[],ys=[];let best=1e9,bestA=a0;
+  for(let a=a0;a<=a1+1e-9;a+=step){
+    const R=reflectance(nList,dList,a);xs.push(a);ys.push(R);
+    if(R<best){best=R;bestA=a;}
+  }
+  return {xs,ys,dipA:bestA};
+}
+function dipRefine(analyte,g,au,around){
+  const {nList,dList}=buildStack(analyte,g,au);
+  let best=1e9,bestA=around;
+  for(let a=around-0.25;a<=around+0.25;a+=0.002){
+    const R=reflectance(nList,dList,a);
+    if(R<best){best=R;bestA=a;}
+  }
+  return bestA;
+}
+
+// --- cizim ---
+const cvs=document.getElementById('plot'),ctx=cvs.getContext('2d');
+const A0=52,A1=80;
+function draw(base,bound,dipBase,dipBound){
+  const W=cvs.width,H=cvs.height;
+  ctx.clearRect(0,0,W,H);
+  const mL=64,mR=20,mT=18,mB=54,pw=W-mL-mR,ph=H-mT-mB;
+  const x=a=>mL+(a-A0)/(A1-A0)*pw, y=r=>mT+(1-r)*ph;
+  ctx.strokeStyle='#26385c';ctx.lineWidth=1;ctx.fillStyle='#6f83a3';
+  ctx.font='18px monospace';ctx.textAlign='center';
+  for(let a=55;a<=80;a+=5){ctx.beginPath();ctx.moveTo(x(a),mT);ctx.lineTo(x(a),mT+ph);ctx.stroke();
+    ctx.fillText(a+'°',x(a),mT+ph+28);}
+  ctx.textAlign='right';
+  for(let r=0;r<=1;r+=0.25){ctx.beginPath();ctx.moveTo(mL,y(r));ctx.lineTo(mL+pw,y(r));ctx.stroke();
+    ctx.fillText(r.toFixed(2),mL-8,y(r)+6);}
+  if(Math.abs(dipBound-dipBase)>0.005){
+    ctx.fillStyle='rgba(232,178,58,.16)';
+    ctx.fillRect(x(Math.min(dipBase,dipBound)),mT,Math.abs(x(dipBound)-x(dipBase)),ph);
+  }
+  const plot=(c,color,dash)=>{
+    ctx.beginPath();ctx.lineWidth=3.2;ctx.strokeStyle=color;ctx.setLineDash(dash||[]);
+    c.xs.forEach((a,i)=>{const px=x(a),py=y(c.ys[i]);i?ctx.lineTo(px,py):ctx.moveTo(px,py);});
+    ctx.stroke();ctx.setLineDash([]);
+  };
+  plot(base,'#9fb6d6',[]);
+  plot(bound,'#ff3324',[9,6]);
+  const mark=(a,color)=>{ctx.fillStyle=color;ctx.beginPath();
+    ctx.moveTo(x(a),mT+ph);ctx.lineTo(x(a)-6,mT+ph+12);ctx.lineTo(x(a)+6,mT+ph+12);ctx.closePath();ctx.fill();};
+  mark(dipBase,'#9fb6d6');mark(dipBound,'#ff3324');
+}
+
+// --- guncelle ---
+function update(){
+  const g=+document.getElementById('sG').value;
+  const au=+document.getElementById('sAu').value;
+  const dn=+document.getElementById('sDn').value;
+  document.getElementById('vG').textContent=g;
+  document.getElementById('vAu').textContent=au+' nm';
+  document.getElementById('vDn').textContent=dn.toFixed(3);
+  const base=curve(N_BASE,g,au,A0,A1,0.12);
+  const bound=curve(N_BASE+dn,g,au,A0,A1,0.12);
+  const dipBase=dipRefine(N_BASE,g,au,base.dipA);
+  const dipBound=dipRefine(N_BASE+dn,g,au,bound.dipA);
+  const shift=dipBound-dipBase;
+  draw(base,bound,dipBase,dipBound);
+  document.getElementById('rAngle').textContent=dipBase.toFixed(2)+'°';
+  document.getElementById('rShift').textContent=shift.toFixed(3)+'°';
+  document.getElementById('rSens').textContent = dn>0 ? (shift/dn).toFixed(0)+' °/RIU' : '—';
+}
+['sG','sAu','sDn'].forEach(id=>document.getElementById(id).addEventListener('input',update));
+
+document.getElementById('startBtn').addEventListener('click',()=>{
+  document.getElementById('startScreen').style.display='none';
+  document.getElementById('simulator').style.display='block';
+  update();
+});
+
+update();
+</script>
+</body>
+</html>
